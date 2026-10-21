@@ -18,12 +18,14 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.text.format.DateFormat
+import android.util.Base64
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -52,7 +54,11 @@ import androidx.webkit.WebViewFeature
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.snackbar.Snackbar
+import org.json.JSONObject
+import org.json.JSONTokener
 import java.util.Calendar
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Browser screen for ONE profile. The WebView is bound to an isolated WebView Profile
@@ -64,6 +70,62 @@ class BrowserActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_PROFILE_ID = "profile_id"
         private const val HOME = "https://www.google.com"
+        private const val BRIDGE = "ProfileBridge"
+
+        /**
+         * Runs before page scripts: remembers the file name of <a download="..."> clicks and
+         * keeps the last few blob objects, so blob: downloads get a real name and can still be
+         * read even if the page revokes the blob URL right after the click.
+         */
+        private const val HOOK_JS = """
+(function(){
+  if (window.__dlHook) return; window.__dlHook = 1;
+  window.__dlName = ''; window.__blobs = {}; window.__blobKeys = [];
+  var oc = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function(){
+    try { if (this.download) window.__dlName = this.download; } catch(e){}
+    return oc.apply(this, arguments);
+  };
+  document.addEventListener('click', function(e){
+    var a = e.target && e.target.closest ? e.target.closest('a[download]') : null;
+    if (a) window.__dlName = a.download;
+  }, true);
+  var cu = URL.createObjectURL;
+  URL.createObjectURL = function(b){
+    var u = cu.apply(URL, arguments);
+    try {
+      window.__blobs[u] = b; window.__blobKeys.push(u);
+      while (window.__blobKeys.length > 5) delete window.__blobs[window.__blobKeys.shift()];
+    } catch(e){}
+    return u;
+  };
+})();
+"""
+
+        /** Reads a blob in 512 KB slices and streams them (base64) to the native bridge. */
+        private const val BLOB_JS = """
+(function(url, name, mime, token){
+  var B = window.$BRIDGE;
+  var cached = window.__blobs && window.__blobs[url];
+  var p = cached ? Promise.resolve(cached) : fetch(url).then(function(r){ return r.blob(); });
+  p.then(function(blob){
+    var id = String(Date.now()) + Math.random().toString(36).slice(2);
+    B.begin(token, id, name, blob.type || mime || '');
+    var size = blob.size, step = 524288, off = 0;
+    function next(){
+      if (off >= size) { B.end(token, id); return; }
+      var fr = new FileReader();
+      fr.onload = function(){
+        var r = fr.result; B.chunk(token, id, r.substring(r.indexOf(',') + 1));
+        off += step; next();
+      };
+      fr.onerror = function(){ B.fail(token, id); };
+      fr.readAsDataURL(blob.slice(off, off + step));
+    }
+    next();
+  }).catch(function(){ B.fail(token, ''); });
+})
+"""
     }
 
     private lateinit var repo: ProfileRepository
@@ -83,6 +145,8 @@ class BrowserActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
 
     private val downloadNames = mutableMapOf<Long, String>()
+    private val bridgeToken = UUID.randomUUID().toString()
+    private val sinks = ConcurrentHashMap<String, FileSaver.Sink>()
     private var pendingDownload: (() -> Unit)? = null
 
     private val handler = Handler(Looper.getMainLooper())
@@ -206,6 +270,8 @@ class BrowserActivity : AppCompatActivity() {
         if (::webView.isInitialized) {
             try { unregisterReceiver(downloadReceiver) } catch (_: Exception) {}
             filePathCallback?.onReceiveValue(null)
+            sinks.values.forEach { FileSaver.abort(applicationContext, it) }
+            sinks.clear()
             (webView.parent as? ViewGroup)?.removeView(webView)
             webView.destroy()
         }
@@ -252,6 +318,7 @@ class BrowserActivity : AppCompatActivity() {
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                view.evaluateJavascript(HOOK_JS, null)
                 if (!urlBar.hasFocus()) urlBar.setText(url)
                 progress.visibility = View.VISIBLE
             }
@@ -303,6 +370,11 @@ class BrowserActivity : AppCompatActivity() {
             }
 
             override fun onHideCustomView() = hideCustomView()
+        }
+
+        webView.addJavascriptInterface(Bridge(), BRIDGE)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(webView, HOOK_JS, setOf("*"))
         }
 
         // Download from this profile (uses THIS profile's cookies).
@@ -399,8 +471,14 @@ class BrowserActivity : AppCompatActivity() {
         startActivity(Intent.createChooser(send, getString(R.string.share_via)))
     }
 
+    private fun folderName(): String =
+        profile.name.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "Profile" }
+
     private fun startDownload(url: String, userAgent: String?, disposition: String?, mime: String?) {
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+        val isHttp = url.startsWith("http://") || url.startsWith("https://")
+        val isBlob = url.startsWith("blob:")
+        val isData = url.startsWith("data:")
+        if (!isHttp && !isBlob && !isData) {
             Toast.makeText(this, R.string.download_unsupported, Toast.LENGTH_LONG).show()
             return
         }
@@ -412,9 +490,13 @@ class BrowserActivity : AppCompatActivity() {
             storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             return
         }
+        if (isBlob || isData) {
+            downloadFromPage(url, disposition, mime)
+            return
+        }
 
         val fileName = URLUtil.guessFileName(url, disposition, mime)
-        val folder = profile.name.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val folder = folderName()
 
         val request = DownloadManager.Request(Uri.parse(url)).apply {
             mime?.let { setMimeType(it) }
@@ -433,11 +515,106 @@ class BrowserActivity : AppCompatActivity() {
         }
     }
 
+    /** blob: and data: URLs only exist inside the page, so the page itself has to hand us the bytes. */
+    private fun downloadFromPage(url: String, disposition: String?, mime: String?) {
+        val readName = "(function(){var n=window.__dlName||'';window.__dlName='';return n;})()"
+        webView.evaluateJavascript(readName) { raw ->
+            val hinted = try { JSONTokener(raw).nextValue() as? String } catch (_: Exception) { null }
+            val fallback = if (url.startsWith("blob:")) "download" else URLUtil.guessFileName("", disposition, mime)
+            val name = hinted?.takeIf { it.isNotBlank() }
+                ?: disposition?.let { URLUtil.guessFileName("", it, mime) }?.takeIf { it != "downloadfile.bin" }
+                ?: fallback
+            if (url.startsWith("data:")) saveDataUrl(url, name, mime)
+            else {
+                val call = "${BLOB_JS.trim()}(${JSONObject.quote(url)}, ${JSONObject.quote(name)}, " +
+                        "${JSONObject.quote(mime ?: "")}, ${JSONObject.quote(bridgeToken)})"
+                webView.evaluateJavascript(call, null)
+            }
+        }
+    }
+
+    private fun saveDataUrl(url: String, name: String, mime: String?) {
+        try {
+            val comma = url.indexOf(',')
+            require(comma > 5)
+            val header = url.substring(5, comma)
+            val payload = url.substring(comma + 1)
+            val bytes = if (header.endsWith(";base64")) Base64.decode(payload, Base64.DEFAULT)
+            else Uri.decode(payload).toByteArray()
+            val m = header.substringBefore(';').ifBlank { mime ?: "" }
+            val clean = FileSaver.cleanName(name, m)
+            val sink = FileSaver.open(applicationContext, folderName(), clean, FileSaver.resolveMime(clean, m))
+            sink.out.write(bytes)
+            finishSink(sink)
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.download_failed, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun finishSink(sink: FileSaver.Sink) {
+        FileSaver.finish(applicationContext, sink) { uri ->
+            runOnUiThread {
+                val bar = Snackbar.make(outer, getString(R.string.download_done, sink.name), Snackbar.LENGTH_LONG)
+                if (uri != null) bar.setAction(R.string.share) { shareUri(uri, sink.mime) }
+                bar.show()
+            }
+        }
+    }
+
+    /** Receives files streamed from the page's JavaScript. Calls need the per-session token. */
+    private inner class Bridge {
+        @JavascriptInterface
+        fun begin(token: String, id: String, name: String, mime: String) {
+            if (token != bridgeToken) return
+            try {
+                val clean = FileSaver.cleanName(name, mime)
+                val m = FileSaver.resolveMime(clean, mime)
+                sinks[id] = FileSaver.open(applicationContext, folderName(), clean, m)
+                runOnUiThread {
+                    Toast.makeText(this@BrowserActivity, getString(R.string.download_started, clean), Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { Toast.makeText(this@BrowserActivity, R.string.download_failed, Toast.LENGTH_LONG).show() }
+            }
+        }
+
+        @JavascriptInterface
+        fun chunk(token: String, id: String, base64: String) {
+            if (token != bridgeToken) return
+            val sink = sinks[id] ?: return
+            try {
+                sink.out.write(Base64.decode(base64, Base64.DEFAULT))
+            } catch (e: Exception) {
+                sinks.remove(id)
+                FileSaver.abort(applicationContext, sink)
+                runOnUiThread { Toast.makeText(this@BrowserActivity, R.string.download_failed, Toast.LENGTH_LONG).show() }
+            }
+        }
+
+        @JavascriptInterface
+        fun end(token: String, id: String) {
+            if (token != bridgeToken) return
+            val sink = sinks.remove(id) ?: return
+            finishSink(sink)
+        }
+
+        @JavascriptInterface
+        fun fail(token: String, id: String) {
+            if (token != bridgeToken) return
+            sinks.remove(id)?.let { FileSaver.abort(applicationContext, it) }
+            runOnUiThread { Toast.makeText(this@BrowserActivity, R.string.download_failed, Toast.LENGTH_LONG).show() }
+        }
+    }
+
     private fun shareDownloaded(id: Long) {
         val dm = getSystemService(DownloadManager::class.java)
         val uri = dm.getUriForDownloadedFile(id) ?: return
+        shareUri(uri, dm.getMimeTypeForDownloadedFile(id))
+    }
+
+    private fun shareUri(uri: Uri, mime: String?) {
         val send = Intent(Intent.ACTION_SEND)
-            .setType(dm.getMimeTypeForDownloadedFile(id) ?: "*/*")
+            .setType(mime ?: "*/*")
             .putExtra(Intent.EXTRA_STREAM, uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         startActivity(Intent.createChooser(send, getString(R.string.share_via)))
