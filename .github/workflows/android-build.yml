@@ -72,9 +72,9 @@ jobs:
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('ProfileBrowser Build #{0}', github.run_number) }}
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+                    tag_name: build-${{ github.run_number }}
+                    name: ProfileBrowser Build #${{ github.run_number }}
+                    prerelease: true
           generate_release_notes: true
           files: |
             app/build/outputs/apk/debug/*.apk
