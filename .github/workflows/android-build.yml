@@ -36,12 +36,8 @@ jobs:
           gradle-version: "8.9"
 
       - name: Install Android SDK packages and accept licenses
-        env:
-          ANDROID_HOME: ${{ runner.temp }}/android-sdk
-          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
         run: |
-          mkdir -p "$ANDROID_HOME/cmdline-tools"
-          SDKMANAGER="$(find "$ANDROID_HOME" "$RUNNER_TOOL_CACHE" -type f -name sdkmanager 2>/dev/null | head -n 1)"
+          SDKMANAGER="$(command -v sdkmanager || find "${ANDROID_HOME:-/usr/local/lib/android/sdk}" "$RUNNER_TOOL_CACHE" -type f -name sdkmanager 2>/dev/null | head -n 1)"
           if [ -z "$SDKMANAGER" ]; then
             echo "sdkmanager not found on runner"
             exit 1
