@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@+id/action_back" android:title="@string/menu_back" />
+    <item android:id="@+id/action_forward" android:title="@string/menu_forward" />
+    <item android:id="@+id/action_reload" android:title="@string/menu_reload" />
+    <item android:id="@+id/action_share_page" android:title="@string/menu_share_page" />
+    <item android:id="@+id/action_countdown" android:title="@string/menu_set_countdown" />
+    <item android:id="@+id/action_remove_countdown" android:title="@string/menu_remove_countdown" />
+    <item android:id="@+id/action_clear_data" android:title="@string/menu_clear_data" />
+</menu>

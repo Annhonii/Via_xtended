@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Multi Profile Browser</string>
+    <string name="profiles_title">Profiles</string>
+    <string name="profiles_empty">No profiles yet.\nTap \"Create profile\" to start.</string>
+    <string name="create_profile">Create profile</string>
+    <string name="edit_profile">Edit profile</string>
+    <string name="profile_name_hint">Profile name</string>
+    <string name="name_required">Please enter a name</string>
+    <string name="enable_countdown">Enable countdown</string>
+    <string name="pick_time">Pick time</string>
+    <string name="save">Save</string>
+    <string name="edit">Edit</string>
+    <string name="delete">Delete</string>
+    <string name="delete_title">Delete profile?</string>
+    <string name="delete_message">Cookies, logins and all data of \"%1$s\" will be removed.</string>
+    <string name="countdown_left">%1$s left</string>
+    <string name="countdown_ready">Ready \u2713</string>
+    <string name="webview_unsupported_title">WebView update needed</string>
+    <string name="webview_unsupported_message">Separate profiles need a newer Android System WebView. Please update \"Android System WebView\" / Chrome from Play Store and try again.</string>
+    <string name="ok">OK</string>
+    <string name="url_hint">Search or enter address</string>
+    <string name="close">Close</string>
+    <string name="more">More</string>
+    <string name="menu_back">Back</string>
+    <string name="menu_forward">Forward</string>
+    <string name="menu_reload">Reload</string>
+    <string name="menu_share_page">Share page link</string>
+    <string name="menu_set_countdown">Set / change countdown</string>
+    <string name="menu_remove_countdown">Remove countdown</string>
+    <string name="menu_clear_data">Clear this profile\'s data</string>
+    <string name="clear_data_title">Clear profile data?</string>
+    <string name="clear_data_message">This logs you out of every site in this profile.</string>
+    <string name="clear">Clear</string>
+    <string name="data_cleared">Profile data cleared</string>
+    <string name="download_started">Downloading %1$s</string>
+    <string name="download_done">Downloaded: %1$s</string>
+    <string name="download_failed">Download failed</string>
+    <string name="download_unsupported">This download type is not supported</string>
+    <string name="share">Share</string>
+    <string name="share_via">Share via</string>
+    <string name="countdown_set">Countdown set</string>
+</resources>
