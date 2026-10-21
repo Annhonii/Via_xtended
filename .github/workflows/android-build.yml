@@ -1,4 +1,4 @@
-name: Android APK Build & Release
+name: ProfileBrowser Android Build
 
 on:
   push:
@@ -13,12 +13,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: android-build-${{ github.ref }}
+  group: profilebrowser-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build APKs
+    name: Build ProfileBrowser APK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -30,12 +30,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Gradle 8.9
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      - name: Set up Android SDK and accept licenses
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
@@ -44,14 +44,24 @@ jobs:
             platforms;android-35
             build-tools;35.0.0
 
-      - name: Build debug and release APKs
+      - name: Accept Android SDK licenses and install required packages
         run: |
-          gradle --no-daemon assembleDebug assembleRelease
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Verify project configuration
+        run: |
+          test -f settings.gradle.kts
+          test -f app/build.gradle.kts
+          gradle --version
+
+      - name: Build debug and release APKs
+        run: gradle --no-daemon --stacktrace assembleDebug assembleRelease
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Via-Xtended-APKs-${{ github.run_number }}
+          name: ProfileBrowser-APKs-${{ github.run_number }}
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
@@ -63,7 +73,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Via Xtended Build #{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('ProfileBrowser Build #{0}', github.run_number) }}
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
           generate_release_notes: true
           files: |
